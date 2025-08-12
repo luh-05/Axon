@@ -58,9 +58,11 @@ pub fn build(b: *std.Build) !void {
     //     .optimize = optimize,
     // });
 
-    const exe_unit_tests = b.addTest(.{ .root_source_file = b.path("tests/test.zig") });
-    exe_unit_tests.root_module.addImport("axon", axon_mod);
+    const exe_unit_tests = b.addTest(.{ .root_source_file = b.path("src/root.zig") });
+    // const exe_unit_tests = b.addTest(.{ .root_source_file = b.path("tests/test.zig") });
+    // exe_unit_tests.root_module.addImport("axon", axon_mod);
 
+    // const run_exe_unit_tests = b.addRunArtifact(exe);
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
     const test_step = b.step("test", "Run unit tests");
