@@ -109,16 +109,16 @@ const IndexMap = struct {
     }
 };
 
-// TODO: test
 const AdjacencyMatrix = struct {
     const Self = @This();
 
     allocator: *std.mem.Allocator,
     size: usize,
-    matrix: [][]const usize,
+    matrix: [][]usize,
 
+    // Initializes an AdjacencyMatrix of a given size with zeros
     pub fn init(allocator: *std.mem.Allocator, size: usize) !Self {
-        const matrix: [][]const usize = try allocator.alloc([]const usize, size);
+        const matrix: [][]usize = try allocator.alloc([]usize, size);
         for (0..size) |i| {
             matrix[i] = try allocator.alloc(usize, size);
             for (0..size) |j| {
@@ -161,7 +161,7 @@ const GraphData = struct {
 
     pub fn deinit(self: *Self) void {
         self.index_map.deinit();
-        if (self.matrix) |v| {
+        if (self.matrix) |*v| {
             v.deinit();
         }
         self.code_paths.deinit();
@@ -196,9 +196,9 @@ pub const Parser = struct {
     };
 
     allocator: *std.mem.Allocator,
-    g_data: *const GraphData,
+    g_data: *GraphData,
 
-    pub fn init(allocator: *std.mem.Allocator, g_data: *const GraphData) Self {
+    pub fn init(allocator: *std.mem.Allocator, g_data: *GraphData) Self {
         return .{
             .allocator = allocator,
             .g_data = g_data,
@@ -206,7 +206,8 @@ pub const Parser = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.g_data.deinit();
+        _ = self;
+        // self.g_data.deinit();
     }
 
     fn deserializeEdgeFile(self: *Self, path: []const u8) !EdgeFile {
@@ -215,12 +216,13 @@ pub const Parser = struct {
 
         const file_stat = try input_file.stat();
 
-        const input = try input_file.readToEndAlloc(self.alloactor, file_stat.size);
+        const input = try input_file.readToEndAllocOptions(self.allocator.*, file_stat.size, null, @sizeOf(u8), 0);
+        std.debug.print("input size: {d}\ninput: {s}\n", .{ input.len, input });
         defer self.allocator.free(input);
 
         var status: std.zon.parse.Status = .{};
-        defer status.deinit(self.allocator);
-        const parsed = try std.zon.parse.fromSlice(EdgeFile, self.allocator, input, &status, .{ .free_on_error = true });
+        defer status.deinit(self.allocator.*);
+        const parsed = try std.zon.parse.fromSlice(EdgeFile, self.allocator.*, input, &status, .{ .free_on_error = true });
 
         return parsed;
     }
@@ -246,48 +248,79 @@ pub const Parser = struct {
     // Parses the DAG beginning at a root file recursively
     pub fn parse(self: *Self, root: []const u8) !void {
         // Generate edges
-        const edges = std.ArrayList(Edge).init(self.allocator.*);
+        var edges = std.ArrayList(Edge).init(self.allocator.*);
         defer edges.deinit();
-        try self.recursiveParse(root, edges);
+        var path = std.ArrayList([]const u8).init(self.allocator.*);
+        try self.recursiveParse(&edges, &path, root);
 
         // Create adjacency Matrix
         const size = self.g_data.index_map.getCount();
-        self.g_data.matrix = AdjacencyMatrix.init(self.allocator, size);
+        self.g_data.matrix = try AdjacencyMatrix.init(self.allocator, size);
 
         // Populate adjacency Matrix
-        for (edges) |e| {
-            self.g_data.matrix[e.from][e.to] = 1;
+        if (self.g_data.matrix) |matrix| {
+            for (edges.items) |e| {
+                matrix.matrix[e.from][e.to] = 1;
+            }
         }
     }
 
-    fn recursiveParse(self: *Self, edges: std.ArrayList(Edge), v: []const u8) !void {
+    fn concatRelativePaths(self: *Self, stack: *std.ArrayList([]const u8)) ![]const u8 {
+        const size = stack.items.len * 2 - 1;
+        std.debug.print("path size: {d}\n", .{size});
+        var parts: [][]const u8 = try self.allocator.alloc([]const u8, size);
+        defer self.allocator.free(parts);
+
+        for (0..parts.len) |i| {
+            if (i % 2 != 0) {
+                parts[i] = "/";
+            } else {
+                parts[i] = stack.items[i / 2];
+            }
+        }
+        std.debug.print("path parts: {any}\n", .{parts});
+
+        const full_path = try std.fs.path.join(self.allocator.*, parts);
+        return full_path;
+    }
+
+    fn recursiveParse(self: *Self, edges: *std.ArrayList(Edge), path: *std.ArrayList([]const u8), v: []const u8) !void {
         const index_map = &self.g_data.index_map;
+
+        // Append current relative path to stack
+        std.debug.print("v: {s}\n", .{v});
+        try path.append(v);
+        defer _ = path.pop();
+        const full_path = try self.concatRelativePaths(path);
+        std.debug.print("full path: {s}\n", .{full_path});
+        defer self.allocator.free(full_path);
 
         // Get root index
         const root = try index_map.getOrCreate(v);
 
         // Add code path
         if (self.g_data.code_paths.get(root)) |_| {} else {
-            try self.g_data.code_paths.put(root, try self.getHurdyFilePath(v));
+            // try self.g_data.code_paths.put(root, try self.getHurdyFilePath(v));
         }
 
         // Parse edge file
-        const edge_path = try self.getEdgeFilePath(v);
+        const edge_path: []const u8 = try self.getEdgeFilePath(full_path);
         defer self.allocator.free(edge_path);
         const edge_file = self.deserializeEdgeFile(edge_path) catch {
+            std.debug.print("path: '{s}'", .{edge_path});
             return error.FailureDeserializingEdgeFile;
         };
-        defer self.allocator.free(edge_file);
+        // defer self.allocator.free(edge_file);
 
         // Convert Edge File into Edges
         for (edge_file.edges) |vertex| {
             const leaf = try index_map.getOrCreate(vertex);
-            edges.append(.{
+            try edges.append(.{
                 .from = root,
                 .to = leaf,
             });
 
-            self.recursiveParse(edges, vertex);
+            try self.recursiveParse(edges, path, vertex);
         }
     }
 };
@@ -334,4 +367,23 @@ test "IndexMap" {
     // Test removes
     try testing.expect(try map.removePath("foo"));
     try testing.expect(map.removeIndex(try map.getOrCreate("bar")));
+}
+
+test "AdjacencyMatrix" {
+    var allocator = testing.allocator;
+
+    var matrix = try AdjacencyMatrix.init(&allocator, 5);
+    defer matrix.deinit();
+}
+
+test "DAG parsing" {
+    var allocator = testing.allocator;
+
+    var g_data = GraphData.init(&allocator);
+    defer g_data.deinit();
+
+    var parser = Parser.init(&allocator, &g_data);
+    defer parser.deinit();
+
+    try parser.parse("./example_graph/root");
 }

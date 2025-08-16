@@ -1,4 +1,4 @@
 .{ .edges = .{
-    .{ .name = "foo", .path = "foo" },
-    .{ .name = "goo", .path = "goo" },
+    "foo/foo",
+    "goo/foo",
 } }
