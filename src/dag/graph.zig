@@ -192,7 +192,8 @@ pub const Parser = struct {
     };
 
     const EdgeFile = struct {
-        edges: [][]const u8,
+        pub const Path = struct { path: []const u8, name: []const u8 };
+        edges: []Path,
     };
 
     allocator: *std.mem.Allocator,
@@ -230,27 +231,28 @@ pub const Parser = struct {
     // Constructs the path of the zon file holding the edges
     // result is owned by caller
     fn getEdgeFilePath(self: *Self, v: []const u8) ![]const u8 {
-        const name = v;
+        const path = v;
 
-        const file_name = try std.mem.concat(self.allocator.*, u8, &.{ name, ".zon" });
+        const file_name = try std.mem.concat(self.allocator.*, u8, &.{ path, ".zon" });
         return file_name;
     }
 
     // Constructs the path of the hurdy File holding the edges
     // result is owned by the caller
     fn getHurdyFilePath(self: *Self, v: []const u8) ![]const u8 {
-        const name = v;
+        const path = v;
 
-        const file_name = try std.mem.concat(self.allocator.*, u8, &.{ name, ".hurdy" });
+        const file_name = try std.mem.concat(self.allocator.*, u8, &.{ path, ".hurdy" });
         return file_name;
     }
 
     // Parses the DAG beginning at a root file recursively
-    pub fn parse(self: *Self, root: []const u8) !void {
+    pub fn parse(self: *Self, root: EdgeFile.Path) !void {
         // Generate edges
         var edges = std.ArrayList(Edge).init(self.allocator.*);
         defer edges.deinit();
         var path = std.ArrayList([]const u8).init(self.allocator.*);
+        defer path.deinit();
         try self.recursiveParse(&edges, &path, root);
 
         // Create adjacency Matrix
@@ -265,6 +267,7 @@ pub const Parser = struct {
         }
     }
 
+    // Concat the paths of the given stack
     fn concatRelativePaths(self: *Self, stack: *std.ArrayList([]const u8)) ![]const u8 {
         const size = stack.items.len * 2 - 1;
         std.debug.print("path size: {d}\n", .{size});
@@ -284,19 +287,28 @@ pub const Parser = struct {
         return full_path;
     }
 
-    fn recursiveParse(self: *Self, edges: *std.ArrayList(Edge), path: *std.ArrayList([]const u8), v: []const u8) !void {
+    // Constructs the path without the suffix
+    fn buildPath(self: *Self, stack: *std.ArrayList([]const u8), name: []const u8) ![]const u8 {
+        const prefix = try self.concatRelativePaths(stack);
+        defer self.allocator.free(prefix);
+
+        const path = try std.fs.path.join(self.allocator.*, &.{ prefix, name });
+        return path;
+    }
+
+    fn recursiveParse(self: *Self, edges: *std.ArrayList(Edge), path: *std.ArrayList([]const u8), v: EdgeFile.Path) !void {
         const index_map = &self.g_data.index_map;
 
         // Append current relative path to stack
-        std.debug.print("v: {s}\n", .{v});
-        try path.append(v);
+        std.debug.print("v: {s}\n", .{v.path});
+        try path.append(v.path);
         defer _ = path.pop();
-        const full_path = try self.concatRelativePaths(path);
+        const full_path = try self.buildPath(path, v.name);
         std.debug.print("full path: {s}\n", .{full_path});
         defer self.allocator.free(full_path);
 
         // Get root index
-        const root = try index_map.getOrCreate(v);
+        const root = try index_map.getOrCreate(full_path);
 
         // Add code path
         if (self.g_data.code_paths.get(root)) |_| {} else {
@@ -314,7 +326,11 @@ pub const Parser = struct {
 
         // Convert Edge File into Edges
         for (edge_file.edges) |vertex| {
-            const leaf = try index_map.getOrCreate(vertex);
+            try path.append(vertex.path);
+            const leaf_path = try self.buildPath(path, vertex.name);
+            defer self.allocator.free(leaf_path);
+            _ = path.pop();
+            const leaf = try index_map.getOrCreate(leaf_path);
             try edges.append(.{
                 .from = root,
                 .to = leaf,
@@ -337,7 +353,7 @@ pub const Graph = struct {
 
         const parser = Parser.init(allocator, *g_data);
         defer parser.deinit();
-        parser.parse(root);
+        parser.parse(.{ .path = root, .name = "" });
 
         return .{
             .allocator = allocator,
@@ -385,5 +401,5 @@ test "DAG parsing" {
     var parser = Parser.init(&allocator, &g_data);
     defer parser.deinit();
 
-    try parser.parse("./example_graph/root");
+    try parser.parse(.{ .path = "./example_graph", .name = "root" });
 }
