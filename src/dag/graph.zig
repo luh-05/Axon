@@ -216,6 +216,7 @@ pub const Parser = struct {
         defer input_file.close();
 
         const file_stat = try input_file.stat();
+        // defer self.allocator.destroy(file_stat);
 
         const input = try input_file.readToEndAllocOptions(self.allocator.*, file_stat.size, null, @sizeOf(u8), 0);
         std.debug.print("input size: {d}\ninput: {s}\n", .{ input.len, input });
@@ -322,6 +323,7 @@ pub const Parser = struct {
             std.debug.print("path: '{s}'", .{edge_path});
             return error.FailureDeserializingEdgeFile;
         };
+        // defer self.allocator.destroy(edge_file);
         // defer self.allocator.free(edge_file);
 
         // Convert Edge File into Edges
